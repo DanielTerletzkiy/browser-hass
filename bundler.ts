@@ -8,7 +8,7 @@ await Bun.build({
   outdir: './build',
   minify: true,
   target: 'browser',
-  naming: "[name].js",
+  naming: '[name].js',
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
   },
