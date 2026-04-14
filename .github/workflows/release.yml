@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Validate versions in manifest files
+        run: |
+          TAG_VERSION=${{ steps.get_version.outputs.VERSION }}
+          
+          echo "Expected version from tag: $TAG_VERSION"
+          
+          BROWSER_VERSION=$(jq -r '.version' public/manifest.json)
+          echo "Browser extension version: $BROWSER_VERSION"
+          
+          HASS_VERSION=$(jq -r '.version' custom_components/browser_hass/manifest.json)
+          echo "Home Assistant integration version: $HASS_VERSION"
+          
+          if [ "$BROWSER_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error file=public/manifest.json::Browser extension version ($BROWSER_VERSION) does not match tag version ($TAG_VERSION)"
+            exit 1
+          fi
+          
+          if [ "$HASS_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error file=custom_components/browser_hass/manifest.json::Home Assistant integration version ($HASS_VERSION) does not match tag version ($TAG_VERSION)"
+            exit 1
+          fi
+          
+          echo "Versions are in sync!"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build extension
+        run: bun run build
+
+      - name: Zip extension
+        run: |
+          cd build
+          zip -r ../browser-hass-extension.zip .
+          cd ..
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: browser-hass-extension.zip
+          generate_release_notes: true
