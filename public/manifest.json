@@ -6,8 +6,12 @@
     "gecko": {
       "id": "browser-hass@daniel.terletzkiy.de",
       "data_collection_permissions": {
-        "required": [],
-        "optional": []
+        "required": [
+          "websiteActivity"
+        ],
+        "optional": [
+          "technicalAndInteraction"
+        ]
       }
     }
   },
