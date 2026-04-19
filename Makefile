@@ -14,7 +14,8 @@ release:
 	echo "Bumping to $$NEW_VERSION"; \
 	sed -i 's/"version": "[^"]*"/"version": "'$$NEW_VERSION'"/' custom_components/browser_hass/manifest.json; \
 	sed -i 's/"version": "[^"]*"/"version": "'$$NEW_VERSION'"/' public/manifest.json; \
-	git add custom_components/browser_hass/manifest.json public/manifest.json; \
+	sed -i 's/"version": "[^"]*"/"version": "'$$NEW_VERSION'"/' public/manifest.firefox.json; \
+	git add custom_components/browser_hass/manifest.json public/manifest.json public/manifest.firefox.json; \
 	git commit -m "chore(release): v$$NEW_VERSION"; \
 	git tag -a v$$NEW_VERSION -m "Release v$$NEW_VERSION"; \
 	echo "Tagged v$$NEW_VERSION"
