@@ -6,17 +6,12 @@
     "gecko": {
       "id": "browser-hass@daniel.terletzkiy.de",
       "data_collection_permissions": {
-        "required": [
-          "websiteActivity"
-        ],
-        "optional": [
-          "technicalAndInteraction"
-        ]
+        "required": ["websiteActivity"],
+        "optional": ["technicalAndInteraction"]
       }
     }
   },
-  "permissions": ["storage"],
-  "host_permissions": ["<all_urls>"],
+  "permissions": ["storage", "activeTab", "scripting", "tabs"],
   "background": {
     "service_worker": "background.js",
     "type": "module"
