@@ -12,7 +12,9 @@
     "typescript": "^6.0.2"
   },
   "scripts": {
-    "build": "bun bundler.ts",
+    "build": "bun bundler.ts chrome && bun bundler.ts firefox",
+    "build:chrome": "bun bundler.ts chrome",
+    "build:firefox": "bun bundler.ts firefox",
     "format": "prettier --write '**/*.{js,jsx,ts,tsx,json,md}' '!build/**' '!node_modules/**'"
   },
   "type": "module",

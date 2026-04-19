@@ -52,14 +52,22 @@ jobs:
       - name: Build extension
         run: bun run build
 
-      - name: Zip extension
+      - name: Zip Chrome extension
         run: |
-          cd build
-          zip -r ../browser-hass-extension.zip .
-          cd ..
+          cd build/chrome
+          zip -r ../../browser-hass-extension-chrome.zip .
+          cd ../..
+
+      - name: Zip Firefox extension
+        run: |
+          cd build/firefox
+          zip -r ../../browser-hass-extension-firefox.zip .
+          cd ../..
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: browser-hass-extension.zip
+          files: |
+            browser-hass-extension-chrome.zip
+            browser-hass-extension-firefox.zip
           generate_release_notes: true
