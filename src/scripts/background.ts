@@ -50,7 +50,7 @@ function sendWsMessageWithDeviceId(
   event_type: string,
   data: any
 ) {
-  chrome.storage.sync.get(['options'], ({ options }: { options: Options }) => {
+  chrome.storage.local.get(['options'], ({ options }: { options: Options }) => {
     if (!options || !options.deviceId) return;
 
     sendWsMessage(type, {
@@ -79,7 +79,7 @@ function connect() {
     socket = null;
   }
 
-  chrome.storage.sync.get(['options'], ({ options }: { options: Options }) => {
+  chrome.storage.local.get(['options'], ({ options }: { options: Options }) => {
     if (!options || !options.url || !options.accessToken) {
       console.log('Missing options for websocket connection');
       updateStatus('disconnected', 'Missing configuration');
@@ -178,7 +178,7 @@ connect();
 
 // Listen for storage changes to reconnect
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'sync' && changes.options) {
+  if (area === 'local' && changes.options) {
     console.log('Options changed, reconnecting...');
     connect();
   }

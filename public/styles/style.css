@@ -74,3 +74,13 @@ form label {
     margin-top: 6px;
     margin-bottom: -6px;
 }
+
+p[role="alert"] {
+    color: #ff92a5;
+    background: rgb(255 22 22 / 0.2);
+    border: 1px solid rgba(176,0,32,0.15);
+    padding: 6px 8px;
+    border-radius: 4px;
+    margin: 6px 0 0 0;
+    font-size: 0.9rem;
+}

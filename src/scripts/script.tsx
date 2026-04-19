@@ -5,6 +5,7 @@ import { version } from '../../public/manifest.json';
 import { Connection, Options } from '../types.ts';
 import { ClientConnectionListener } from '../listener.ts';
 import { GetStatusColor } from '../utils.ts';
+import OptionsForm from './components/OptionsForm.tsx';
 
 const div = document.getElementById('app') || document.createElement('div');
 if (!div.id) {
@@ -12,9 +13,9 @@ if (!div.id) {
   document.body.appendChild(div);
 }
 
-let extensionOptions: Options | null = null;
-chrome.storage.sync.get(['options'], ({ options }: { options: Options }) => {
-  extensionOptions = options;
+let initialOptions: Omit<Options, 'accessToken'> | null = null;
+chrome.storage.local.get(['options'], ({ options }: { options: Options }) => {
+  initialOptions = options;
   const root = createRoot(div);
   root.render(<Entrypoint />);
 });
@@ -42,63 +43,11 @@ function Entrypoint() {
         {status?.message && <div>{status.message}</div>}
       </div>
 
-      {settingsVisible && <ConfigForm />}
+      {settingsVisible && <OptionsForm initialOptions={initialOptions} />}
 
       <button onClick={() => setSettingsVisible(!settingsVisible)}>
         {settingsVisible ? 'Hide' : 'Show'} Settings
       </button>
     </main>
-  );
-}
-
-function ConfigForm() {
-  const [form, setForm] = useState<Options>({
-    url: extensionOptions?.url ?? '',
-    accessToken: extensionOptions?.accessToken ?? '',
-    deviceId: extensionOptions?.deviceId ?? '',
-  });
-
-  useEffect(() => {
-    // Only save if we actually have values to avoid overwriting with empty defaults on initial load if sync.get was slow
-    // Actually extensionOptions is already loaded here.
-    chrome.storage.sync.set({ options: form });
-  }, [form]);
-
-  return (
-    <div>
-      <form>
-        <label htmlFor={'url'}>Instance URL</label>
-        <input
-          id={'url'}
-          value={form.url}
-          onChange={(e) => {
-            setForm({ ...form, url: e.target.value });
-          }}
-          required
-          placeholder={"wss://your-url.example"}
-        />
-
-        <label htmlFor={'accessToken'}>Long Lived Access Token</label>
-        <input
-          id={'accessToken'}
-          type={'password'}
-          value={form.accessToken}
-          onChange={(e) => {
-            setForm({ ...form, accessToken: e.target.value });
-          }}
-          required
-        />
-
-        <label htmlFor={'deviceId'}>Device ID</label>
-        <input
-          id={'deviceId'}
-          value={form.deviceId}
-          onChange={(e) => {
-            setForm({ ...form, deviceId: e.target.value });
-          }}
-          required
-        />
-      </form>
-    </div>
   );
 }
