@@ -11,7 +11,7 @@
       }
     }
   },
-  "permissions": ["storage", "activeTab", "scripting", "tabs"],
+  "permissions": ["storage", "activeTab", "tabs"],
   "background": {
     "scripts": ["background.js"],
     "service_worker": "background.js",
