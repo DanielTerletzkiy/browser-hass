@@ -32,10 +32,8 @@ There should now be a device with our chosen name with a media_player entity ins
 
 ### 3. Install the Browser Extension for Chromium / Firefox
 
-> TODO: it is planned to distribute the extensions to the respectful "stores"...
-
-For now, you can install the pre-build extension from the releases tab, read up on how to manually install custom
-extensions for your browser of choosing
+[![Chrome Web Store](https://img.shields.io/badge/Chrome-Add%20to%20Chrome-4285F4?style=for-the-badge&logo=google-chrome&logoColor=white)](https://chromewebstore.google.com/detail/browser-hass/lnbhnhomnjldeehjjeddphmkadnbkdkj)
+[![Firefox](https://img.shields.io/badge/Firefox-Add%20to%20Firefox-FF7139?style=for-the-badge&logo=firefox&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/browser-hass/)
 
 ### 4. Create Long-Lived Access Token
 
