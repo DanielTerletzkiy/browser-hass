@@ -1,0 +1,33 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "confirm": {
+        "title": "Add browser",
+        "description": "**{name}** is running the Browser HASS extension and wants to show up as a media player. You can give it a different name now.",
+        "data": {
+          "name": "Name"
+        },
+        "data_description": {
+          "name": "How the device and media player are called in Home Assistant, e.g. \"Office PC Firefox\"."
+        }
+      },
+      "user": {
+        "title": "Add browser",
+        "description": "Pick one of the browsers that are currently connected through the Browser HASS extension.",
+        "data": {
+          "device_id": "Browser",
+          "name": "Name"
+        },
+        "data_description": {
+          "name": "Leave empty to use the browser's suggested name."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This browser is already set up.",
+      "already_in_progress": "This browser is already being set up.",
+      "no_browsers": "No unconfigured browser is connected right now.\n\nInstall the Browser HASS extension, open it and enter your Home Assistant URL and a long-lived access token. The browser then shows up under **Discovered** on the Devices & services page, ready to be added with one click."
+    }
+  }
+}

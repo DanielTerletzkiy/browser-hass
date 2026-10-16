@@ -1,12 +1,16 @@
 import logging
+from typing import Any
+
 from homeassistant.components.media_player import MediaPlayerEntity
 from homeassistant.components.media_player.const import MediaPlayerEntityFeature, MediaPlayerState
-from homeassistant.const import CONF_NAME, STATE_IDLE
-from homeassistant.core import callback
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.util import slugify, dt as dt_util
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import CONF_DEVICE_ID, DOMAIN
+from .hub import BrowserHassHub
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,173 +25,129 @@ SUPPORT_FEATURES = (
         | MediaPlayerEntityFeature.VOLUME_SET
 )
 
+# Fields of a state message that map 1:1 onto entity attributes
+STATE_ATTRIBUTES = {
+    "state": "_attr_state",
+    "volume": "_attr_volume_level",
+    "media_title": "_attr_media_title",
+    "media_artist": "_attr_media_artist",
+    "media_album_name": "_attr_media_album_name",
+    "media_image_url": "_attr_media_image_url",
+    "media_duration": "_attr_media_duration",
+}
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    hass.data.setdefault(DOMAIN, {})
-    players = hass.data[DOMAIN].setdefault("players", {})
-    browser_name = entry.data.get(CONF_NAME, entry.title)
-    browser_slug = slugify(browser_name)
-    entity = BrowserPlayer(hass, entry.entry_id, browser_name, browser_slug)
-    players[entry.entry_id] = entity
-    async_add_entities([entity])
 
-    @callback
-    def handle_state(event):
-        msg = event.data
-        msg_name = msg.get("name") or msg.get("device_name")
-        msg_device_id = msg.get("device_id")
-        
-        _LOGGER.debug("Received browser_hass_state event for %s. msg_name: %s, msg_device_id: %s, target: %s", 
-                     browser_name, msg_name, msg_device_id, browser_slug)
-        
-        if msg_name and slugify(msg_name) == browser_slug:
-            _LOGGER.debug("Matched by name: %s", browser_name)
-            entity.handle_state(msg)
-            return
-        if msg_device_id and slugify(str(msg_device_id)) == browser_slug:
-            _LOGGER.debug("Matched by device_id: %s", msg_device_id)
-            entity.handle_state(msg)
-
-    remove_listener = hass.bus.async_listen("browser_hass_state", handle_state)
-    entry.async_on_unload(remove_listener)
-    entry.async_on_unload(lambda: players.pop(entry.entry_id, None))
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+):
+    async_add_entities([BrowserPlayer(hass.data[DOMAIN], entry)])
 
 
 class BrowserPlayer(MediaPlayerEntity):
     _attr_supported_features = SUPPORT_FEATURES
+    _attr_has_entity_name = True
+    _attr_name = None
+    _attr_state = MediaPlayerState.IDLE
 
-    def __init__(self, hass, entry_id, browser_name, browser_slug):
-        self.hass = hass
-        self.entry_id = entry_id
-        self._browser_name = browser_name
-        self._browser_slug = browser_slug
-        self._attr_unique_id = f"{entry_id}_media_player"
-        self._attr_name = browser_name
-        self._attr_state = MediaPlayerState.IDLE
-        self._tab_id = None
-        self._tab_title = None
-        self._source_dict: dict[int, str] = {}
-        self._media_title = None
-        self._media_artist = None
-        self._media_album_name = None
-        self._attr_media_image_url = None
-        self._media_position = None
-        self._media_position_updated_at = None
-        self._media_duration = None
-
-    @property
-    def device_info(self):
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.entry_id)},
-            name=self._browser_name,
+    def __init__(self, hub: BrowserHassHub, entry: ConfigEntry):
+        self._hub = hub
+        self._device_id: str = entry.data[CONF_DEVICE_ID]
+        self._attr_unique_id = f"{entry.entry_id}_media_player"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
             manufacturer="Browser HASS",
             model="Browser",
         )
+        self._tab_id: int | None = None
+        self._source_dict: dict[int, str] = {}
+        self._legacy = False
 
     @property
-    def source(self):
-        return self._tab_title
+    def available(self) -> bool:
+        # Browsers on the old event bus protocol have no session we could watch
+        return self._legacy or self._hub.is_connected(self._device_id)
 
-    @property
-    def source_list(self):
-        return list(self._source_dict.values())
+    async def async_added_to_hass(self) -> None:
+        # Only route messages to the entity once it is actually added, writing
+        # state before that (or after removal) fails because `hass` is unset
+        self._hub.async_add_player(self._device_id, self)
 
-    @property
-    def volume_level(self):
-        return self._volume
+    async def async_will_remove_from_hass(self) -> None:
+        self._hub.async_remove_player(self._device_id, self)
 
-    @property
-    def media_title(self):
-        return self._media_title
+    @callback
+    def async_reset(self) -> None:
+        """Forget the last media, the browser resends whatever is still playing."""
+        self._attr_state = MediaPlayerState.IDLE
+        self._tab_id = None
+        self._source_dict = {}
+        self._attr_source = None
+        self._attr_source_list = None
+        for attr in STATE_ATTRIBUTES.values():
+            if attr != "_attr_state":
+                setattr(self, attr, None)
+        self._attr_media_position = None
+        self._attr_media_position_updated_at = None
 
-    @property
-    def media_artist(self):
-        return self._media_artist
-
-    @property
-    def media_album_name(self):
-        return self._media_album_name
-
-    @property
-    def media_position(self):
-        return self._media_position
-
-    @property
-    def media_position_updated_at(self):
-        return self._media_position_updated_at
-
-    @property
-    def media_duration(self):
-        return self._media_duration
-
-    def handle_state(self, msg):
-        _LOGGER.debug("BrowserPlayer %s updating state with: %s", self._browser_name, msg)
-        if "name" in msg and msg["name"] and msg["name"] != self._browser_name:
-            self._browser_name = msg["name"]
-            self._attr_name = msg["name"]
+    @callback
+    def async_handle_state(self, msg: dict[str, Any], legacy: bool = False) -> None:
+        _LOGGER.debug("Browser %s updating state with: %s", self._device_id, msg)
+        self._legacy = legacy
         if "tab_id" in msg:
             self._tab_id = msg["tab_id"]
         if "tab_title" in msg:
-            self._tab_title = msg["tab_title"]
+            self._attr_source = msg["tab_title"]
         if "source_dict" in msg:
             self._source_dict = {int(k): v for k, v in msg["source_dict"].items()}
-        if "state" in msg:
-            self._attr_state = msg["state"]
-        if "volume" in msg:
-            self._volume = msg["volume"]
-        if "media_title" in msg:
-            self._media_title = msg["media_title"]
-        if "media_artist" in msg:
-            self._media_artist = msg["media_artist"]
-        if "media_album_name" in msg:
-            self._media_album_name = msg["media_album_name"]
-        if "media_image_url" in msg:
-            self._attr_media_image_url = msg["media_image_url"]
+            self._attr_source_list = list(self._source_dict.values())
+        for key, attr in STATE_ATTRIBUTES.items():
+            if key in msg:
+                setattr(self, attr, msg[key])
         if "media_position" in msg:
-            self._media_position = msg["media_position"]
-            self._media_position_updated_at = dt_util.utcnow()
-        if "media_duration" in msg:
-            self._media_duration = msg["media_duration"]
+            self._attr_media_position = msg["media_position"]
+            self._attr_media_position_updated_at = (
+                dt_util.utcnow() if msg["media_position"] is not None else None
+            )
 
         self.async_write_ha_state()
 
     async def async_select_source(self, source: str):
-        pair = next((k, v) for k, v in self._source_dict.items() if v == source)
-        self._tab_id = pair[0]
-        self._tab_title = pair[1]
-
-        self._send_ws({"type": "source_select"})
-
+        tab_id = next((k for k, v in self._source_dict.items() if v == source), None)
+        if tab_id is None:
+            return
+        self._tab_id = tab_id
+        self._attr_source = source
+        self._send_command({"type": "source_select"})
 
     async def async_media_play(self):
-        self._send_ws({"type": "play"})
+        self._send_command({"type": "play"})
 
     async def async_media_pause(self):
-        self._send_ws({"type": "pause"})
+        self._send_command({"type": "pause"})
 
     async def async_media_next_track(self):
-        self._send_ws({"type": "next"})
+        self._send_command({"type": "next"})
 
     async def async_media_previous_track(self):
-        self._send_ws({"type": "previous"})
+        self._send_command({"type": "previous"})
 
     async def async_media_seek(self, position):
-        self._send_ws({"type": "seek", "position": position})
+        self._send_command({"type": "seek", "position": position})
 
     async def async_set_volume_level(self, volume):
-        self._send_ws({"type": "volume", "level": volume})
+        self._send_command({"type": "volume", "level": volume})
 
     async def async_play_media(self, media_type, media_id, **kwargs):
-        self._send_ws({
+        self._send_command({
             "type": "play_media",
             "media_type": media_type,
             "media_id": media_id
         })
 
-    def _send_ws(self, payload):
-        self.hass.bus.async_fire("browser_hass_"+self._browser_slug+"_command", {
-            "name": self._browser_name,
+    def _send_command(self, payload):
+        self._hub.async_send_command(self._device_id, {
             "tab_id": self._tab_id,
-            "tab_title": self._tab_title,
+            "tab_title": self._attr_source,
             **payload
         })

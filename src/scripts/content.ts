@@ -43,13 +43,27 @@ function getMediaInfo() {
   };
 }
 
-function sendUpdate(force = false) {
+function sendMediaGone() {
+  if (!lastSent) return;
+  lastSent = null;
+  chrome.runtime.sendMessage({ type: 'media_gone' }).catch(() => {});
+}
+
+/**
+ * @param force make this tab the one Home Assistant shows
+ * @param resync send even when nothing changed since the last update
+ */
+function sendUpdate(force = false, resync = false) {
   const info = getMediaInfo();
-  if (!info) return;
+  if (!info) {
+    // The media element went away, e.g. single page app navigation
+    sendMediaGone();
+    return;
+  }
 
   // Deep compare to avoid redundant messages
 
-  if (!force) {
+  if (!force && !resync) {
     if (
       lastSent &&
       lastSent.state === info.state &&
@@ -132,6 +146,10 @@ function triggerMediaCommand(command: 'next' | 'previous') {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'resync') {
+    sendUpdate(false, true);
+    return;
+  }
   if (message.type !== 'command') {
     return;
   }
@@ -200,6 +218,9 @@ const observer = new MutationObserver((mutations) => {
 });
 
 observer.observe(document.body, { childList: true, subtree: true });
+
+// Navigating away or closing the tab ends its media
+window.addEventListener('pagehide', sendMediaGone);
 
 // Monitor title and mediaSession changes (polling as a fallback because there's no event for mediaSession metadata changes)
 setInterval(sendUpdate, 2000);

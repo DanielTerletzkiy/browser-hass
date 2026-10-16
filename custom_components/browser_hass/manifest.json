@@ -3,6 +3,9 @@
   "name": "Browser HASS",
   "version": "0.1.8",
   "config_flow": true,
+  "dependencies": ["websocket_api"],
+  "integration_type": "device",
+  "iot_class": "local_push",
   "requirements": [],
   "codeowners": [],
   "documentation": ""

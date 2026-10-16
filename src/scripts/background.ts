@@ -1,10 +1,29 @@
-import { Connection, Options } from '../types.ts';
-import { GetStatusColor } from '../utils.ts';
+import { Connection, Options, Registration } from '../types.ts';
+import {
+  DefaultBrowserName,
+  GetDeviceId,
+  GetStatusColor,
+  NormalizeUrl,
+  WebsocketUrl,
+} from '../utils.ts';
+
+const REGISTER_RETRY_MS = 30_000;
+const KEEPALIVE_MS = 20_000;
 
 let socket: WebSocket | null = null;
 let reconnectTimeout: any = null;
+let registerTimeout: any = null;
+let keepAliveInterval: any = null;
 let messageId = 1;
 let isAuthenticated = false;
+let deviceId: string | null = null;
+// id of our `browser_hass/subscribe` message, registration updates and commands arrive with it
+let subscribeId: number | null = null;
+let discoverId: number | null = null;
+let registration: Registration = { status: 'unknown' };
+
+// Tab whose media Home Assistant currently shows
+let currentTabId: number | null = null;
 
 let sources: Map<number, { title: string; playing: boolean }> = new Map<
   number,
@@ -17,7 +36,7 @@ function updateStatus(status: Connection['status'], message?: string) {
       color: GetStatusColor(status),
     }),
     chrome.action.setBadgeText({
-      text: status.split('')[0].toUpperCase(),
+      text: status === 'authenticated' ? '' : status.split('')[0].toUpperCase(),
     }),
   ]).finally();
 
@@ -31,44 +50,115 @@ function updateStatus(status: Connection['status'], message?: string) {
   });
 }
 
-function sendWsMessage(type: string, data: any) {
+function updateRegistration(next: Registration) {
+  registration = next;
+  chrome.storage.local.set({ registration });
+  // Waiting on the user in Home Assistant, hint at it on the icon
+  if (isAuthenticated) {
+    const attention = next.status !== 'registered';
+    chrome.action
+      .setBadgeBackgroundColor({ color: GetStatusColor('connecting') })
+      .finally();
+    chrome.action.setBadgeText({ text: attention ? '!' : '' }).finally();
+  }
+}
+
+function sendWsMessage(type: string, data: any): number | null {
   if (!(socket && socket.readyState === WebSocket.OPEN)) {
-    return;
+    return null;
   }
 
-  const msg = JSON.stringify({
-    id: messageId++,
-    type,
-    ...data,
-  });
+  const id = messageId++;
+  const msg = JSON.stringify({ id, type, ...data });
   console.log('Sending message:', msg);
   socket.send(msg);
+  return id;
 }
 
-function sendWsMessageWithDeviceId(
-  type: string,
-  event_type: string,
-  data: any
-) {
-  chrome.storage.local.get(['options'], ({ options }: { options: Options }) => {
-    if (!options || !options.deviceId) return;
+function sendState(state: any) {
+  if (!deviceId) return;
+  sendWsMessage('browser_hass/state', { device_id: deviceId, state });
+}
 
-    sendWsMessage(type, {
-      event_type,
-      event_data: {
-        device_id: options.deviceId,
-        ...data,
-      },
-    });
+function sendSources() {
+  sendState({
+    source_dict: Object.fromEntries(
+      Array.from(sources).map(([id, val]) => [id, val.title])
+    ),
   });
 }
 
-function connect() {
-  messageId = 1;
-  if (reconnectTimeout) {
-    clearTimeout(reconnectTimeout);
-    reconnectTimeout = null;
+function resync() {
+  currentTabId = null;
+  sendSources();
+  chrome.tabs.query({}, (tabs) =>
+    tabs.forEach(
+      (tab) =>
+        tab.id &&
+        chrome.tabs.sendMessage(tab.id, { type: 'resync' }).catch(() => {})
+    )
+  );
+}
+
+/** A tab stopped playing for good: closed, navigated away, media removed */
+function removeSource(tabId: number) {
+  if (!sources.delete(tabId) && tabId !== currentTabId) return;
+  sendSources();
+  if (tabId === currentTabId) {
+    currentTabId = null;
+    sendState({
+      tab_id: null,
+      tab_title: null,
+      state: 'idle',
+      volume: null,
+      media_title: null,
+      media_artist: null,
+      media_album_name: null,
+      media_image_url: null,
+      media_position: null,
+      media_duration: null,
+    });
   }
+}
+
+function register() {
+  if (registerTimeout) {
+    clearTimeout(registerTimeout);
+    registerTimeout = null;
+  }
+  subscribeId = sendWsMessage('browser_hass/subscribe', {
+    device_id: deviceId,
+    name: DefaultBrowserName(),
+    version: chrome.runtime.getManifest().version,
+  });
+}
+
+function stopTimers() {
+  [reconnectTimeout, registerTimeout].forEach((t) => t && clearTimeout(t));
+  if (keepAliveInterval) clearInterval(keepAliveInterval);
+  reconnectTimeout = registerTimeout = keepAliveInterval = null;
+}
+
+function handleSubscriptionEvent(event: any) {
+  if (event.type === 'registration') {
+    const { type, ...next } = event;
+    updateRegistration(next);
+    // Home Assistant resets the player whenever we (re)connect
+    if (next.status === 'registered') resync();
+  } else if (event.type === 'command') {
+    const { command } = event;
+    console.log(`Received command for tab ${command.tab_id}:`, command);
+    chrome.tabs
+      .sendMessage(Number(command.tab_id), { type: 'command', data: command })
+      .catch(() => {});
+  }
+}
+
+async function connect() {
+  messageId = 1;
+  subscribeId = discoverId = null;
+  isAuthenticated = false;
+  stopTimers();
 
   if (socket) {
     socket.onclose = null;
@@ -79,115 +169,121 @@ function connect() {
     socket = null;
   }
 
-  chrome.storage.local.get(['options'], ({ options }: { options: Options }) => {
-    if (!options || !options.url || !options.accessToken) {
-      console.log('Missing options for websocket connection');
-      updateStatus('disconnected', 'Missing configuration');
-      return;
-    }
+  const { options }: { options?: Options } = await chrome.storage.local.get([
+    'options',
+  ]);
+  deviceId = await GetDeviceId();
+  const baseUrl = options?.url ? NormalizeUrl(options.url) : null;
+  if (!baseUrl || !options?.accessToken) {
+    console.log('Missing options for websocket connection');
+    updateStatus('disconnected', 'Not configured yet');
+    return;
+  }
 
-    const wsUrl = options.url.replace(/^http/, 'ws') + '/api/websocket';
-    console.log('Connecting to', wsUrl);
-    updateStatus('connecting');
+  const wsUrl = WebsocketUrl(baseUrl);
+  console.log('Connecting to', wsUrl);
+  updateStatus('connecting');
 
-    const currentSocket = new WebSocket(wsUrl);
-    socket = currentSocket;
+  let currentSocket: WebSocket;
+  try {
+    currentSocket = new WebSocket(wsUrl);
+  } catch (e) {
+    updateStatus('error', `Invalid URL: ${wsUrl}`);
+    return;
+  }
+  socket = currentSocket;
 
-    currentSocket.onopen = () => {
-      console.log('WebSocket connected');
-      updateStatus('connected');
-      // Auth
-      currentSocket.send(
-        JSON.stringify({
-          type: 'auth',
-          access_token: options.accessToken,
-        })
+  currentSocket.onopen = () => {
+    console.log('WebSocket connected');
+    updateStatus('connected');
+    currentSocket.send(
+      JSON.stringify({
+        type: 'auth',
+        access_token: options.accessToken,
+      })
+    );
+  };
+
+  currentSocket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    console.log('WebSocket message:', data);
+
+    if (data.type === 'auth_ok') {
+      isAuthenticated = true;
+      updateStatus('authenticated');
+      // Lets us notice right away when the integration gets added; only works
+      // for admin tokens, everybody else falls back to the periodic retry
+      discoverId = sendWsMessage('subscribe_events', {
+        event_type: 'browser_hass_discover',
+      });
+      register();
+      // Activity keeps the extension's service worker from being suspended
+      keepAliveInterval = setInterval(
+        () => sendWsMessage('ping', {}),
+        KEEPALIVE_MS
       );
-    };
-
-    currentSocket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      console.log('WebSocket message:', data);
-
-      if (data.type === 'auth_ok') {
-        console.log('Authenticated');
-        isAuthenticated = true;
-        updateStatus('authenticated');
-        // Subscribe to command events
-        sendWsMessage('subscribe_events', {
-          event_type: `browser_hass_${options.deviceId}_command`,
-        });
-      } else if (
-        data.type === 'event' &&
-        data.event?.event_type === `browser_hass_${options.deviceId}_command`
-      ) {
-        console.log(
-          `Received browser_hass_command for ${options.deviceId} -> ${data.event.data.tab_id}:`,
-          data.event.data
-        );
-
-        chrome.tabs
-          .sendMessage(Number(data.event.data.tab_id), {
-            type: 'command',
-            data: data.event.data,
-          })
-          .catch();
-
-        // Forward command to all tabs
-        // chrome.tabs.query({}, (tabs) => {
-        //     tabs.forEach(tab => {
-        //         if (tab.id) {
-        //             chrome.tabs.sendMessage(tab.id, {
-        //                 type: "command",
-        //                 data: data.event.data
-        //             }).catch(err => {
-        //                 // Ignore errors for tabs where content script isn't loaded
-        //             });
-        //         }
-        //     });
-        // });
-      } else if (data.type === 'auth_invalid') {
-        console.error('Auth invalid:', data.message);
-        updateStatus('error', 'Invalid access token: ' + data.message);
-        // Don't retry automatically on auth invalid? Or retry anyway?
-        // Probably better to let user fix it.
-        currentSocket.close();
-      }
-    };
-
-    currentSocket.onclose = () => {
-      if (socket === currentSocket) {
-        socket = null;
-        isAuthenticated = false;
-        console.log('WebSocket closed, retrying in 5s');
-        updateStatus('disconnected', 'Connection closed, retrying in 5s');
-        reconnectTimeout = setTimeout(connect, 5000);
-      }
-    };
-
-    currentSocket.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      updateStatus('error', 'WebSocket error');
+    } else if (data.type === 'auth_invalid') {
+      console.error('Auth invalid:', data.message);
+      updateStatus('error', 'Invalid access token');
+      // No point in retrying until the user changes the token
+      currentSocket.onclose = null;
+      socket = null;
       currentSocket.close();
-    };
-  });
+    } else if (data.type === 'result' && data.id === subscribeId) {
+      if (data.success) return;
+      if (data.error?.code === 'unknown_command') {
+        updateRegistration({ status: 'not_set_up' });
+      } else {
+        console.error('Registration failed:', data.error);
+      }
+      registerTimeout = setTimeout(register, REGISTER_RETRY_MS);
+    } else if (data.type === 'event' && data.id === subscribeId) {
+      handleSubscriptionEvent(data.event);
+    } else if (data.type === 'event' && data.id === discoverId) {
+      if (registration.status === 'not_set_up') register();
+    }
+  };
+
+  currentSocket.onclose = () => {
+    if (socket === currentSocket) {
+      socket = null;
+      isAuthenticated = false;
+      stopTimers();
+      console.log('WebSocket closed, retrying in 5s');
+      updateStatus('disconnected', 'Connection lost, retrying…');
+      reconnectTimeout = setTimeout(connect, 5000);
+    }
+  };
+
+  currentSocket.onerror = (error) => {
+    console.error('WebSocket error:', error);
+    updateStatus('error', `Can't reach ${baseUrl}`);
+    currentSocket.close();
+  };
 }
 
 updateStatus('disconnected');
 connect();
 
-// Listen for storage changes to reconnect
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.options) {
     console.log('Options changed, reconnecting...');
+    updateRegistration({ status: 'unknown' });
     connect();
   }
 });
 
-chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (message.type === 'reconnect') {
+    connect();
+    return;
+  }
+
   if (!isAuthenticated) return;
 
-  if (message.type === 'media_update') {
+  if (message.type === 'media_gone') {
+    if (sender.tab?.id) removeSource(sender.tab.id);
+  } else if (message.type === 'media_update') {
     const isPlaying = message.data.state === 'playing';
     const current = sender.tab?.id ? sources.get(sender.tab.id) : undefined;
     if (
@@ -200,11 +296,7 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
         title: sender.tab.title!,
         playing: isPlaying,
       });
-      sendWsMessageWithDeviceId('fire_event', 'browser_hass_state', {
-        source_dict: Object.fromEntries(
-          Array.from(sources).map(([id, val]) => [id, val.title])
-        ),
-      });
+      sendSources();
     }
 
     if (
@@ -212,7 +304,8 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
       sender.tab?.active ||
       Array.from(sources.values()).filter(({ playing }) => playing).length <= 1
     ) {
-      sendWsMessageWithDeviceId('fire_event', 'browser_hass_state', {
+      currentTabId = sender.tab?.id ?? null;
+      sendState({
         tab_id: sender.tab?.id,
         tab_title: sender.tab?.title,
         ...message.data,
@@ -221,11 +314,7 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   }
 });
 
-chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
-  sources.delete(tabId);
-  sendWsMessageWithDeviceId('fire_event', 'browser_hass_state', {
-    source_dict: Object.fromEntries(
-      Array.from(sources).map(([id, val]) => [id, val.title])
-    ),
-  });
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (isAuthenticated) removeSource(tabId);
+  else sources.delete(tabId);
 });
